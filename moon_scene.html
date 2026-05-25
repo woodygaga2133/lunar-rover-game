@@ -1,0 +1,1122 @@
+﻿<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>月球漫游</title>
+<style>
+@font-face {
+  font-family:'Broadway';
+  src:url('file:///C:/Windows/Fonts/BROADW.TTF') format('truetype');
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; font-family:monospace; }
+
+/* ── 左上信息隐藏（JS 依赖这些 id，保留不删） */
+#info { display:none; }
+
+/* ── 底部操作提示 HUD ── */
+#hud {
+  position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+  display:flex; gap:18px; align-items:center;
+  color:rgba(255,255,255,0.55); font-size:11px; pointer-events:none;
+}
+.wasd { display:flex; flex-direction:column; align-items:center; gap:3px; }
+.wasd-row { display:flex; gap:3px; }
+.hud-sep { width:1px; height:48px; background:rgba(255,255,255,0.15); margin:0 2px; }
+.hud-other { line-height:2.1; color:rgba(255,255,255,0.55); }
+.key {
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:22px; height:20px; padding:0 5px;
+  border:1px solid rgba(255,255,255,0.2); border-radius:3px;
+  background:rgba(255,255,255,0.08); color:rgba(255,255,255,0.7); font-size:11px;
+  letter-spacing:0;
+}
+
+/* ── 小地图 ── */
+#minimap-wrap {
+  position:fixed; right:12px; bottom:12px;
+  width:240px; height:240px; pointer-events:none;
+}
+#minimap-canvas { display:block; width:240px; height:240px; }
+
+#loadbar {
+  position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+  color:#888; font-size:14px; text-align:center; line-height:2;
+  background:rgba(0,0,0,0.7); padding:20px 30px; border-radius:8px;
+}
+
+/* ── 开场标题（兼加载遮罩）── */
+#title-overlay {
+  position:fixed; top:0; left:0; right:0; bottom:0;
+  display:flex; align-items:flex-start; justify-content:center;
+  padding-top:18vh;
+  pointer-events:none; z-index:1000;
+  background:#000;
+  transition: background 0.8s ease-out, opacity 0.8s ease-out;
+}
+#title-overlay.fade-out { opacity:0; }
+#title-text {
+  font-family:'Broadway','Limelight','Segoe UI',sans-serif;
+  font-size:clamp(72px, 13vw, 180px);
+  font-weight:100;
+  letter-spacing:0.22em;
+  color:#ffffff;
+  text-shadow: 0 0 60px rgba(255,255,255,0.12);
+}
+</style>
+</head>
+<body>
+
+<div id="loadbar" style="display:none">⏳ 读取地形数据...</div>
+
+<div id="title-overlay"><div id="title-text">LUNAR</div></div>
+
+<!-- 保留 id 供 JS 使用，#info 已通过 CSS 隐藏 -->
+<div id="info">
+  <em id="spd">0</em><em id="cam">3RD</em>
+  <em id="pos">0,0</em><em id="tiles">0</em>
+</div>
+
+<div id="hud">
+  <!-- WASD 键位布局 -->
+  <div class="wasd">
+    <div class="wasd-row"><span class="key">W</span></div>
+    <div class="wasd-row"><span class="key">A</span><span class="key">S</span><span class="key">D</span></div>
+  </div>
+  <div class="hud-sep"></div>
+  <div class="hud-other">
+    <span class="key">Shift</span> 加速
+    &nbsp;&nbsp;<span class="key">右键</span> 旋转视角
+    &nbsp;&nbsp;<span class="key">滚轮</span> 缩放
+  </div>
+</div>
+
+<div id="minimap-wrap">
+  <canvas id="minimap-canvas" width="240" height="240"></canvas>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three":         "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// ─── 单位：Three.js 世界坐标 = km（与 Blender GLB 一致）
+// ─── 坐标：Blender Z-up → Three.js Y-up：[bx, by, bz] → [bx, bz, -by]
+// ─── 车身 m 制建模，carRoot.scale=0.001 缩到 km 制
+
+// ── Renderer ─────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setClearColor(0x000000, 1);   // 纯黑背景
+document.body.appendChild(renderer.domElement);
+
+// ── Scene & Camera ────────────────────────────────────────────────────
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.0001, 1800);
+
+// ── Sable + Moebius 融合手绘风 Shader ────────────────────────────────
+// 核心原则：平地完全同色（消除3D感）+ 世界坐标散布石子痕迹（近景细节）
+// Object.assign 而非 UniformsUtils.merge，后者会 clone Vector3 导致引用断裂
+const terrainUniforms = Object.assign(
+  THREE.UniformsUtils.merge([ THREE.UniformsLib['lights'] ]),
+  {
+    sunDir:  { value: new THREE.Vector3(1, 0.8, 0.4).normalize() },
+    uBright: { value: 1.6 },   // 全局亮度倍数（1.0=原始，>1=更亮）
+  }
+);
+
+const TERRAIN_MAT = new THREE.ShaderMaterial({
+  uniforms:     terrainUniforms,
+  lights:       true,
+  vertexColors: true,
+  vertexShader: /* glsl */`
+    #include <common>
+    #include <shadowmap_pars_vertex>
+
+    varying vec3 vNormal;
+    varying vec3 vColor;
+    varying vec3 vWorldPos;
+    varying vec3 vViewPos;       // view space, for spot light 计算（Three.js 的 spotLights uniforms 也在 view space）
+    varying vec3 vViewNormal;
+
+    void main() {
+      vNormal     = normalize(mat3(modelMatrix) * normal);
+      vColor      = color.rgb;
+      vec4 wp     = modelMatrix * vec4(position, 1.0);
+      vWorldPos   = wp.xyz;
+      vec4 vp     = modelViewMatrix * vec4(position, 1.0);
+      vViewPos    = vp.xyz;
+      vViewNormal = normalize(normalMatrix * normal);
+      gl_Position = projectionMatrix * vp;
+      #if NUM_DIR_LIGHT_SHADOWS > 0
+        vDirectionalShadowCoord[0] = directionalShadowMatrix[0] * wp;
+      #endif
+    }
+  `,
+  fragmentShader: /* glsl */`
+    #include <common>
+    #include <packing>
+    #include <lights_pars_begin>
+    #include <shadowmap_pars_fragment>
+
+    varying vec3 vNormal;
+    varying vec3 vColor;
+    varying vec3 vWorldPos;
+    varying vec3 vViewPos;
+    varying vec3 vViewNormal;
+    uniform vec3  sunDir;
+    uniform float uBright;
+
+    // 伪随机 hash（mod 限幅防止大数 sin 精度崩溃）
+    vec2 hash2(vec2 p) {
+      p = mod(p, 289.0);
+      p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+      return fract(sin(p) * 43758.5453);
+    }
+    float hash1(vec2 p) {
+      p = mod(p, 289.0);
+      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    }
+    // 平滑 value noise（双线性插值 + 平滑曲线）
+    float vnoise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      float a = hash1(i);
+      float b = hash1(i + vec2(1.0, 0.0));
+      float c = hash1(i + vec2(0.0, 1.0));
+      float d = hash1(i + vec2(1.0, 1.0));
+      return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+    // 3 倍频段 fbm
+    float fbm(vec2 p) {
+      float v = 0.5 * vnoise(p);
+      v += 0.25 * vnoise(p * 2.03);
+      v += 0.125 * vnoise(p * 4.07);
+      return v;
+    }
+    // 在世界 XZ 平面采样 fbm 高度场（米单位）
+    // 返回 vec2 (gx, gz) = 高度梯度
+    vec2 bumpGrad(vec2 wpMeters, float scale, float amp) {
+      float e = 0.5 / scale;
+      float h  = fbm(wpMeters * scale);
+      float hx = fbm((wpMeters + vec2(e, 0.0)) * scale);
+      float hz = fbm((wpMeters + vec2(0.0, e)) * scale);
+      return vec2(hx - h, hz - h) * amp / e;
+    }
+
+    void main() {
+      vec3 N = normalize(vNormal);
+      vec3 L = normalize(sunDir);
+
+      float shadow = 1.0;
+      #if NUM_DIR_LIGHT_SHADOWS > 0
+        DirectionalLightShadow ds = directionalLightShadows[0];
+        shadow = getShadow(
+          directionalShadowMap[0], ds.shadowMapSize,
+          ds.shadowBias, ds.shadowRadius,
+          vDirectionalShadowCoord[0]
+        );
+      #endif
+
+      // ── 12档色阶：背光冷色6档 + 受光暖色6档 ────────────────────────
+      // shadow 不乘进 NdotL，而是最后做颜色 tint，阴影不会变黑
+      // Half-Lambert：背光面 cold0 为底，有渐变细节，不比 cold0 更黑
+      float rawNdotL = dot(N, L) * 0.5 + 0.5;
+
+      float x  = rawNdotL * 12.0;
+      float lo = floor(clamp(x, 0.0, 11.9999));
+      float bt = smoothstep(0.25, 0.75, fract(x));
+      float q  = lo + bt;
+
+      // 背光冷色调（q: 0 → 6）— 可见的深蓝灰，冷调阴影，不死黑
+      vec3 cold0 = vColor * vec3(0.150, 0.164, 0.202);
+      vec3 cold1 = vColor * vec3(0.169, 0.184, 0.224);
+      vec3 cold2 = vColor * vec3(0.190, 0.206, 0.248);
+      vec3 cold3 = vColor * vec3(0.212, 0.229, 0.272);
+      vec3 cold4 = vColor * vec3(0.234, 0.252, 0.294);
+      vec3 cold5 = vColor * vec3(0.255, 0.273, 0.313);
+
+      vec3 warm0 = vColor * vec3(0.655, 0.619, 0.533);
+      vec3 warm1 = vColor * vec3(0.720, 0.675, 0.564);
+      vec3 warm2 = vColor * vec3(0.789, 0.735, 0.601);
+      vec3 warm3 = vColor * vec3(0.860, 0.796, 0.638);
+      vec3 warm4 = vColor * vec3(0.930, 0.856, 0.674);
+      vec3 warm5 = vColor * vec3(1.005, 0.913, 0.711);
+
+      // 分段线性插值（12段）
+      vec3 result;
+      if      (q < 1.0)  result = mix(cold0, cold1, q);
+      else if (q < 2.0)  result = mix(cold1, cold2, q - 1.0);
+      else if (q < 3.0)  result = mix(cold2, cold3, q - 2.0);
+      else if (q < 4.0)  result = mix(cold3, cold4, q - 3.0);
+      else if (q < 5.0)  result = mix(cold4, cold5, q - 4.0);
+      else if (q < 6.0)  result = mix(cold5, warm0, q - 5.0);  // 终结线
+      else if (q < 7.0)  result = mix(warm0, warm1, q - 6.0);
+      else if (q < 8.0)  result = mix(warm1, warm2, q - 7.0);
+      else if (q < 9.0)  result = mix(warm2, warm3, q - 8.0);
+      else if (q < 10.0) result = mix(warm3, warm4, q - 9.0);
+      else if (q < 11.0) result = mix(warm4, warm5, q - 10.0);
+      else               result = warm5;
+
+      // 阴影：只在受光区叠加车身阴影（夜面不处理，cold0已是底线）
+      // shadow=1 无阴影；shadow<1 压向 warm0，但不低于 warm0
+      float shadowStr = smoothstep(5.0, 7.0, q);   // 只在受光区生效
+      result = mix(result, mix(warm0, result, shadow), shadowStr);
+
+      // ── 世界坐标散布石子痕迹（仅受光面可见）─────────────────────────
+      // scale=900：1格≈1.1m；半径0.07-0.18格≈8-20cm
+      vec2 wPos = vWorldPos.xz * 900.0;
+      vec2 cell = floor(wPos);
+      vec2 fuv  = fract(wPos);   // 当前格内局部坐标 [0,1)
+      float mark = 0.0;
+      for (int ix = -1; ix <= 1; ix++) {
+        for (int iy = -1; iy <= 1; iy++) {
+          vec2 nc    = cell + vec2(float(ix), float(iy));
+          vec2 rnd   = hash2(nc);
+          // 点中心在邻格的局部坐标 → 转换到当前格坐标系
+          vec2 ctr   = vec2(float(ix), float(iy)) + rnd * 0.9;
+          vec2 d     = fuv - ctr;
+          d.x       *= 1.5 + rnd.y * 1.0;   // 椭圆拉伸
+          float r    = 0.06 + rnd.y * 0.12;
+          float contrib = (1.0 - smoothstep(r * 0.5, r, length(d)))
+                          * step(rnd.x, 0.30);  // 30%密度，用step替代continue
+          mark = max(mark, contrib);
+        }
+      }
+      // 石子只在受光区域可见（q>6 = 进入暖色档），阴影里不显示
+      result = mix(result, result * 0.62, mark * smoothstep(5.5, 7.5, q) * 0.85);
+
+      // ── 车头灯 SpotLight 叠加（view space 计算）─────────────────────────
+      // Three.js 把 spotLights[i].position / .direction 都转到 view space
+      // direction = (light - target).normalize() = 从 target 指向 light（非发射方向）
+      // 表面在锥内：(从表面到光) 和 direction 同向 → dot ≈ +1
+      #if NUM_SPOT_LIGHTS > 0
+        vec3 spotAccum = vec3(0.0);
+        vec3 NV = normalize(vViewNormal);
+        for (int i = 0; i < NUM_SPOT_LIGHTS; i++) {
+          vec3 toLight = spotLights[i].position - vViewPos;
+          float dist   = length(toLight);
+          vec3  L      = toLight / dist;
+          float ang    = dot(L, spotLights[i].direction);
+          float spotA  = smoothstep(spotLights[i].coneCos, spotLights[i].penumbraCos, ang);
+          if (spotA > 0.0) {
+            float distA = 1.0 - clamp(dist / max(spotLights[i].distance, 1e-5), 0.0, 1.0);
+            distA = pow(distA, spotLights[i].decay);
+            float NoL = max(dot(NV, L), 0.0);
+            spotAccum += spotLights[i].color * spotA * distA * NoL;
+          }
+        }
+        result += spotAccum * 0.5;
+      #endif
+
+      gl_FragColor = vec4(min(result * uBright, vec3(1.0)), 1.0);
+    }
+  `,
+});
+
+// 没有顶点色的 tile 用 Moebius 冷蓝灰填充
+const DEFAULT_VERT_COLOR = new THREE.Color(0x7080a0);
+
+// ── Inverted Hull 描边辅助 ────────────────────────────────────────────
+function addHullOutline(mesh, pct = 0.03) {
+  const ol = new THREE.Mesh(
+    mesh.geometry,
+    new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide })
+  );
+  ol.scale.setScalar(1 + pct);
+  ol.renderOrder = -1;
+  mesh.add(ol);
+}
+
+// ── 渐变天空（depthTest:false + pos.xyww，永远在最底层，杜绝 z-fight）
+const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthTest:  false,
+    depthWrite: false,
+    uniforms: {
+      topColor:  { value: new THREE.Color().setRGB(0.06, 0.08, 0.18) },   // 深空蓝黑（可见线性值）
+      midColor:  { value: new THREE.Color().setRGB(0.08, 0.10, 0.20) },
+      horizColor:{ value: new THREE.Color().setRGB(0.16, 0.19, 0.33) },  // 地平线深蓝灰
+      sunColor:  { value: new THREE.Color(0x8c4a18) },   // 太阳方向暖辉
+      sunDir:    { value: new THREE.Vector3(1, 0, 0) },  // 由游戏循环更新
+    },
+    vertexShader: `
+      varying float vY;
+      varying vec3  vDir;
+      void main() {
+        vec3 n = normalize(position);
+        vY   = n.y;
+        vDir = n;
+        vec4 pos = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        gl_Position = pos.xyww;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 topColor;
+      uniform vec3 midColor;
+      uniform vec3 horizColor;
+      uniform vec3 sunColor;
+      uniform vec3 sunDir;
+      varying float vY;
+      varying vec3  vDir;
+      void main() {
+        // 渐变压在相机可见的窄区间内（vY -0.15 → 0.25）
+        // vY=0(地平线)=horizColor 全量，vY=0.6渐变到topColor
+        float t = smoothstep(-0.05, 0.85, vY);
+        vec3 col = mix(horizColor, topColor, t);
+
+        // 太阳方向辉光
+        float sunDot    = max(dot(vDir, normalize(sunDir)), 0.0);
+        float horizMask = smoothstep(0.20, -0.10, abs(vY));
+        float glow      = pow(sunDot, 5.0) * horizMask * 1.2;
+        col += sunColor * glow;
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+// 天空球已移除，背景用 clearColor 黑色
+
+// ── 星星（正常深度测试：被地形遮挡，不遮地形）──────────────────────
+// 放在 450km，比地形(175km)远，比相机 far(1800km)近，深度测试正常工作
+// depthWrite:false 防止星星遮挡彼此时写入深度造成黑块
+{
+  function makeStars(count, radius, size, color) {
+    const buf = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const phi = Math.acos(Math.random());   // 只放上半球
+      const th  = 2 * Math.PI * Math.random();
+      buf[i*3]   = radius * Math.sin(phi) * Math.cos(th);
+      buf[i*3+1] = radius * Math.cos(phi) + 5;
+      buf[i*3+2] = radius * Math.sin(phi) * Math.sin(th);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(buf, 3));
+    return new THREE.Points(geo, new THREE.PointsMaterial({
+      color, size, sizeAttenuation: false,
+      depthWrite: false,   // 不写深度，但参与深度测试（被地形正确遮挡）
+    }));
+  }
+  scene.add(makeStars(2200, 450, 1.2, 0xdde8ff));
+  scene.add(makeStars( 220, 440, 3.2, 0xffffff));
+}
+
+// ── 太阳（绕轨道旋转）────────────────────────────────────────────────
+const DAY_SECS = 240;
+let   sunAngle = Math.PI / 6;   // 初始30°斜射，影子更长，手绘感更强
+const sun = new THREE.DirectionalLight(0xe8eeff, 3.5);   // 冷白光
+sun.castShadow = true;
+// 把灯光贴近车辆，shadow camera 才有足够深度精度
+// 远近：0.05~0.7 km = 精度 0.65km/2048 ≈ 32 cm（车高约 50 cm，可区分）
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near   =  0.05;   // km
+sun.shadow.camera.far    =  0.70;   // km
+sun.shadow.camera.left   = -0.06;   // ±60 m
+sun.shadow.camera.right  =  0.06;
+sun.shadow.camera.top    =  0.06;
+sun.shadow.camera.bottom = -0.06;
+sun.shadow.camera.updateProjectionMatrix();
+sun.shadow.bias = -0.0005;          // 防 shadow acne
+scene.add(sun);
+scene.add(sun.target);
+const sunMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(6, 12, 8),
+  new THREE.MeshBasicMaterial({ color: 0xfff4a0 })
+);
+scene.add(sunMesh);
+// 极低环境光：Moebius 阴影近黑，不能有太多补光
+const ambient = new THREE.AmbientLight(0x0a1020, 0.04);
+scene.add(ambient);
+
+// ── 月球车（m 制建模，scale×0.001 → km）──────────────────────────
+// -Z = 车头（行驶方向），+Z = 车尾（摄像机在后方 +Z 侧）
+const WHEEL_R_M  = 0.52;
+const WHEEL_R_KM = WHEEL_R_M * 0.001;
+const AXLE_HALF  = 0.00165;   // 前后轴距一半 = 1.65 m（km制）
+const TRACK_HALF = 0.00115;   // 左右轮距一半 = 1.15 m（km制）
+
+const carRoot = new THREE.Group();
+carRoot.scale.setScalar(0.001);
+carRoot.matrixAutoUpdate = false;  // 我们手动设置矩阵
+
+// wheels 数组：GLB 加载完后由 Wheel_N 命名的 mesh 填充
+const wheels = [];
+
+// 车头灯：2 个 SpotLight，斜下前方打，暖白色
+const HEADLIGHT_COLOR = 0xffe2c4;   // 暖白（饱和度降低，不那么黄）
+const headlights      = [];          // SpotLight
+const headlightBulbs  = [];          // 可见发光球
+// 配对：[灯位置 (m), 目标点 (m，相对 carRoot)]
+//   位置：车头前缘 +Z=2.2，离地 0.55m
+//   目标：再往前 2m，往下 0.6m  →  斜下前方
+const HL_CONFIG = [
+  [[+0.7, 0.55, 2.2], [+0.7, -0.05, 4.5]],   // 右灯
+  [[-0.7, 0.55, 2.2], [-0.7, -0.05, 4.5]],   // 左灯
+];
+HL_CONFIG.forEach(([pos, tgt]) => {
+  // SpotLight(color, intensity, distance, angle, penumbra, decay)
+  // distance=0.08km(80m)  angle=π/7(~26°半角)  penumbra=0.45  decay=1.2
+  const sl = new THREE.SpotLight(HEADLIGHT_COLOR, 0, 0.08, Math.PI/7, 0.45, 1.2);
+  sl.position.set(pos[0], pos[1], pos[2]);
+  sl.target.position.set(tgt[0], tgt[1], tgt[2]);
+  carRoot.add(sl);
+  carRoot.add(sl.target);
+  headlights.push(sl);
+  // 可见发光球
+  const bulb = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16, 12, 8),
+    new THREE.MeshBasicMaterial({ color: HEADLIGHT_COLOR })
+  );
+  bulb.position.set(pos[0], pos[1], pos[2]);
+  carRoot.add(bulb);
+  headlightBulbs.push(bulb);
+});
+
+// 异步加载真实 GLB 月球车（独立 loader，不复用后面才定义的地形 loader）
+new GLTFLoader().load('models/rover_lite.glb', (gltf) => {
+  const m = gltf.scene;
+  // 模型默认朝向修正（实测：rotation=0 时车头对齐物理 +Z forward）
+  m.rotation.y = 0;
+  m.updateMatrixWorld(true);
+
+  // bbox 测量 → 包 wrapper 居中
+  const box = new THREE.Box3().setFromObject(m);
+  const size   = new THREE.Vector3(); box.getSize(size);
+  const center = new THREE.Vector3(); box.getCenter(center);
+  // 目标尺寸：5m（与原来的盒子小车长度匹配）
+  const s = 5.0 / Math.max(size.x, size.y, size.z);
+
+  const wrapper = new THREE.Group();
+  wrapper.add(m);
+  wrapper.scale.setScalar(s);
+  // 居中 + 底部对齐到 y=0
+  // bbox 底部对齐到地面：car.pos 在地面上方 WHEEL_R_KM（轮半径），所以模型再下移 WHEEL_R_M
+  wrapper.position.set(-center.x * s, -box.min.y * s - WHEEL_R_M, -center.z * s);
+  carRoot.add(wrapper);
+
+  // 材质：换成 Phong，保留原色 + emissive 兜底（夜间也能看见）
+  m.traverse(o => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+      o.frustumCulled = false;
+      let c = new THREE.Color(0.55, 0.58, 0.62);
+      if (o.material) {
+        if (o.material.emissive && (o.material.emissive.r + o.material.emissive.g + o.material.emissive.b) > 0.05) {
+          c.copy(o.material.emissive);
+        } else if (o.material.color) {
+          c.copy(o.material.color);
+        }
+      }
+      o.material = new THREE.MeshPhongMaterial({
+        color:    c,
+        emissive: c.clone().multiplyScalar(0.02),   // 极弱自发光，让光照主导
+        shininess: 16,
+      });
+    }
+    // 6 个轮子被拆成 Wheel_1..Wheel_6
+    if (o.name && o.name.startsWith('Wheel_')) {
+      wheels.push(o);
+    }
+  });
+  console.log('[Rover] loaded; size=', size.toArray().map(v=>v.toFixed(2)),
+              'scale=', s.toFixed(3), 'wheels=', wheels.length);
+}, undefined, (err) => console.error('[Rover] GLB 加载失败:', err));
+
+scene.add(carRoot);
+
+// ── 车辆物理状态（km 制）─────────────────────────────────────────────
+// 起始：Three.js Y-up 北极，Y≈175 km
+const car = {
+  pos:   new THREE.Vector3(0, 175.5, 0),
+  yaw:   Math.PI / 2,   // 逆时针90°，侧对镜头
+  speed: 0,
+  wSpin: 0,
+};
+// 四轮独立检测点（FL=左前 FR=右前 RL=左后 RR=右后），分别 lerp
+let wFL = 175.2, tFL = 175.2;
+let wFR = 175.2, tFR = 175.2;
+let wRL = 175.2, tRL = 175.2;
+let wRR = 175.2, tRR = 175.2;
+let groundY = 175.2;   // 四轮均值（car.pos 用）
+
+camera.position.set(0, 175.51, 0.01);
+
+// ── 相机轨道状态（WoW 风格）────────────────────────────────────────────
+const cam = {
+  yawOff: -0.55,      // 相机偏左 → 车在画面右侧
+  pitch:  0.52,       // 略俯视 → 车在画面下方
+  dist:   0.038,      // 稍远一点看到更多地形
+  intro: true,        // 开场阶段，不橡皮筋回正
+};
+
+const CAM_PITCH_MIN = 0.08;   // 不能完全水平
+const CAM_PITCH_MAX = 1.45;   // 不能翻到地面以下
+const CAM_DIST_MIN  = 0.004;  // 4 m
+const CAM_DIST_MAX  = 0.200;  // 200 m
+const MOUSE_SENS    = 0.0045;
+const RUBBER_BAND   = 2.2;    // 行驶时摄像头回正速率（1/s）
+
+let mouseBtn = 0;             // bitmask: bit0=左键, bit2=右键 (e.button: 0=left, 2=right)
+let lastMX = 0, lastMY = 0;
+
+const cv = renderer.domElement;
+cv.addEventListener('mousedown', e => {
+  mouseBtn |= (1 << e.button);
+  lastMX = e.clientX; lastMY = e.clientY;
+  e.preventDefault();
+});
+window.addEventListener('mouseup',   e => { mouseBtn &= ~(1 << e.button); });
+window.addEventListener('mousemove', e => {
+  if (!(mouseBtn & 5)) return;   // 没按左/右键就不旋转
+  const dx = e.clientX - lastMX;
+  const dy = e.clientY - lastMY;
+  lastMX = e.clientX; lastMY = e.clientY;
+  cam.yawOff -= dx * MOUSE_SENS;
+  cam.pitch   = Math.max(CAM_PITCH_MIN, Math.min(CAM_PITCH_MAX, cam.pitch + dy * MOUSE_SENS));
+});
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('wheel', e => {
+  cam.dist = Math.max(CAM_DIST_MIN, Math.min(CAM_DIST_MAX, cam.dist * (1 + e.deltaY * 0.001)));
+  e.preventDefault();
+}, { passive: false });
+
+// ── 键盘 ─────────────────────────────────────────────────────────────
+const keys = {};
+document.addEventListener('keydown', e => { keys[e.code] = true;  });
+document.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+// ── 动态地形加载 ──────────────────────────────────────────────────────
+const TILE_BASE   = 'moon%20small_tiles/';
+const TILE_SCALE  = 175 / 29.41;           // Blender 均值半径 29.41km → 游戏 175km
+const LOAD_DIST   = 55;    // km — 加载范围
+const UNLOAD_DIST = 75;    // km — 卸载范围
+const CHECK_MS    = 3000;
+
+const loader        = new GLTFLoader();
+let   tileData      = [];
+const loaded        = new Map();        // id → Group
+const loading       = new Set();
+const tileMeshesMap = new Map();        // id → Mesh[]
+let   allTileMeshes = [];
+
+// ★ 关键修复：Blender Z-up → Three.js Y-up
+//    Blender: X=右, Y=前, Z=上
+//    Three.js: X=右, Y=上, Z=前
+//    转换：[bx, by, bz] → Three.js [bx, bz, -by]
+function tileCenter3(t) {
+  const [bx, by, bz] = t.center;
+  return new THREE.Vector3(bx, bz, -by);
+}
+
+function loadTile(t) {
+  if (loaded.has(t.id) || loading.has(t.id)) return;
+  loading.add(t.id);
+  loader.load(`${TILE_BASE}${t.name}.glb`, gltf => {
+    const group  = gltf.scene;
+    group.scale.setScalar(TILE_SCALE);   // 30km → 175km
+    const meshes = [];
+    group.traverse(child => {
+      if (!child.isMesh) return;
+      if (!child.geometry.attributes.normal)
+        child.geometry.computeVertexNormals();
+      // 补全 color 属性（Moebius shader 需要顶点色）
+      if (!child.geometry.attributes.color) {
+        const n   = child.geometry.attributes.position.count;
+        const buf = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) {
+          buf[i*3]   = DEFAULT_VERT_COLOR.r;
+          buf[i*3+1] = DEFAULT_VERT_COLOR.g;
+          buf[i*3+2] = DEFAULT_VERT_COLOR.b;
+        }
+        child.geometry.setAttribute('color', new THREE.BufferAttribute(buf, 3));
+      }
+      child.material      = TERRAIN_MAT;
+      child.receiveShadow = true;   // 接收车体阴影
+      meshes.push(child);
+    });
+    scene.add(group);
+    group.updateMatrixWorld(true);   // 确保射线检测立即生效
+    loaded.set(t.id, group);
+    tileMeshesMap.set(t.id, meshes);
+    loading.delete(t.id);
+    rebuildMeshList();
+    document.getElementById('tiles').textContent = loaded.size;
+    // 第一块加载完就隐藏 loadbar，不等射线检测
+    if (loaded.size === 1) {
+      document.getElementById('loadbar').style.display = 'none';
+      document.getElementById('title-overlay').style.background = 'transparent';
+      setTimeout(() => {
+        document.getElementById('title-overlay').classList.add('fade-out');
+        cam.intro = false;
+      }, 3000);
+    }
+  }, undefined, err => {
+    loading.delete(t.id);
+    console.warn('tile load failed:', t.name, err);
+  });
+}
+
+function unloadTile(id) {
+  const g = loaded.get(id);
+  if (!g) return;
+  g.traverse(c => { if (c.isMesh) { c.geometry.dispose(); } });
+  scene.remove(g);
+  loaded.delete(id);
+  tileMeshesMap.delete(id);
+  rebuildMeshList();
+  document.getElementById('tiles').textContent = loaded.size;
+}
+
+function rebuildMeshList() {
+  allTileMeshes = [];
+  for (const meshes of tileMeshesMap.values())
+    allTileMeshes.push(...meshes);
+}
+
+function checkTiles() {
+  if (!tileData.length) return;
+  for (const t of tileData) {
+    const dist = car.pos.distanceTo(tileCenter3(t));
+    if (dist < LOAD_DIST)        loadTile(t);
+    else if (dist > UNLOAD_DIST) unloadTile(t.id);
+  }
+}
+
+fetch('moon%20small_tiles/metadata.json')
+  .then(r => r.json())
+  .then(meta => {
+    tileData = meta.tiles;
+    document.getElementById('loadbar').textContent = `⏳ 加载地形... (${meta.count} 块)`;
+    // 按照与起始点的距离排序，优先加载近处
+    tileData.sort((a, b) =>
+      car.pos.distanceTo(tileCenter3(a)) - car.pos.distanceTo(tileCenter3(b))
+    );
+    checkTiles();
+    setInterval(checkTiles, CHECK_MS);
+  })
+  .catch(err => {
+    document.getElementById('loadbar').textContent =
+      '❌ 无法读取地形 — 请确认已启动本地 HTTP 服务器\n(uv run --python 3.12 python -m http.server 8080)';
+    console.error(err);
+  });
+
+// ── 垂直检测射线（全部静态复用，每帧各用一次）────────────────────────
+const _hRay   = new THREE.Raycaster();   // 四轮地形高度
+const _camRay = new THREE.Raycaster();   // 相机地面碰撞
+
+// 在 worldPos 正上方往下打一条射线，返回地形半径（到球心距离）
+// far=50 覆盖缩放后地形高差 ±17km，起点 +25km 避免在地面以下发射
+function getTerrainR(worldPos) {
+  if (allTileMeshes.length === 0) return worldPos.length();
+  const up  = worldPos.clone().normalize();
+  const ori = worldPos.clone().addScaledVector(up, 25.0);
+  _hRay.set(ori, up.clone().negate());
+  _hRay.far = 50;
+  const hits = _hRay.intersectObjects(allTileMeshes, false);
+  return hits.length > 0 ? hits[0].point.length() : worldPos.length();
+}
+
+// 四轮地形检测：fwd = 行驶方向，right = 水平右方向（切平面内）
+function snapToTerrain(fwd, right) {
+  tFL = getTerrainR(car.pos.clone().addScaledVector(fwd,  AXLE_HALF).addScaledVector(right, -TRACK_HALF)) + WHEEL_R_KM;
+  tFR = getTerrainR(car.pos.clone().addScaledVector(fwd,  AXLE_HALF).addScaledVector(right,  TRACK_HALF)) + WHEEL_R_KM;
+  tRL = getTerrainR(car.pos.clone().addScaledVector(fwd, -AXLE_HALF).addScaledVector(right, -TRACK_HALF)) + WHEEL_R_KM;
+  tRR = getTerrainR(car.pos.clone().addScaledVector(fwd, -AXLE_HALF).addScaledVector(right,  TRACK_HALF)) + WHEEL_R_KM;
+}
+
+// ── 物理常量（km/s 制）────────────────────────────────────────────────
+const TURN        = 1.6;
+const ACCEL_NORM  = 0.012;           // 普通加速度
+const ACCEL_BOOST = 0.060;           // Shift 加速度（5×）
+const BRAKE       = 0.018;
+const DRAG        = 1.6;
+const MAXSPD_NORM  = 50  / 3600;    // 50 km/h = 0.01389 km/s
+const MAXSPD_BOOST = 300 / 3600;    // 300 km/h = 0.08333 km/s
+
+// ── 主更新 ────────────────────────────────────────────────────────────
+const clock = new THREE.Clock();
+
+function update(dt) {
+  // 转向
+  if (keys['KeyA'] || keys['ArrowLeft'])  car.yaw += TURN * dt;
+  if (keys['KeyD'] || keys['ArrowRight']) car.yaw -= TURN * dt;
+
+  // 油门 / 刹车（Shift 加速）
+  const boost   = keys['ShiftLeft'] || keys['ShiftRight'];
+  const maxSpd  = boost ? MAXSPD_BOOST : MAXSPD_NORM;
+  const accel   = boost ? ACCEL_BOOST  : ACCEL_NORM;
+  if (keys['KeyW'] || keys['ArrowUp'])
+    car.speed = Math.min(car.speed + accel * dt, maxSpd);
+  else if (keys['KeyS'] || keys['ArrowDown'])
+    car.speed = Math.max(car.speed - BRAKE * dt, -MAXSPD_NORM * 0.5);
+  else
+    car.speed *= Math.exp(-DRAG * dt);
+  if (Math.abs(car.speed) < 1e-5) car.speed = 0;
+
+  // 球面移动：forward / right 方向在当前位置的切平面上
+  const up  = car.pos.clone().normalize();
+  const raw = new THREE.Vector3(Math.sin(car.yaw), 0, Math.cos(car.yaw));
+  const fwd = raw.clone().sub(up.clone().multiplyScalar(raw.dot(up))).normalize();
+  car.pos.addScaledVector(fwd, car.speed * dt);
+
+  // 切平面右方向（用 yaw 派生，再投影到切平面）
+  const rawR = new THREE.Vector3(Math.cos(car.yaw), 0, -Math.sin(car.yaw));
+  const right = rawR.clone().sub(up.clone().multiplyScalar(rawR.dot(up))).normalize();
+
+  // 四轮地形检测（每帧直接赋值，不 lerp）
+  // 曾经加 lerp 是为了配合 4 帧节流，现在每帧都检测，lerp 只会造成下坡腾空
+  snapToTerrain(fwd, right);
+  wFL = tFL;  wFR = tFR;
+  wRL = tRL;  wRR = tRR;
+
+  // 四轮均值 → 车体高度
+  groundY = (wFL + wFR + wRL + wRR) * 0.25;
+  car.pos.setLength(groundY);
+
+  // 车轮自转
+  car.wSpin += car.speed * dt / WHEEL_R_KM;
+  wheels.forEach(w => { w.rotation.x = car.wSpin; });
+
+  // ── 车辆姿态：四接触点 → 正交基 ─────────────────────────────────────
+  // 四个轮胎地面接触点（世界坐标）
+  const cFL = car.pos.clone().addScaledVector(fwd,   AXLE_HALF).addScaledVector(right, -TRACK_HALF).normalize().multiplyScalar(wFL);
+  const cFR = car.pos.clone().addScaledVector(fwd,   AXLE_HALF).addScaledVector(right,  TRACK_HALF).normalize().multiplyScalar(wFR);
+  const cRL = car.pos.clone().addScaledVector(fwd,  -AXLE_HALF).addScaledVector(right, -TRACK_HALF).normalize().multiplyScalar(wRL);
+  const cRR = car.pos.clone().addScaledVector(fwd,  -AXLE_HALF).addScaledVector(right,  TRACK_HALF).normalize().multiplyScalar(wRR);
+
+  // 前后轴心 & 左右轴心（各取平均）
+  const cFront = cFL.clone().add(cFR).multiplyScalar(0.5);
+  const cRear  = cRL.clone().add(cRR).multiplyScalar(0.5);
+  const cLeft  = cFL.clone().add(cRL).multiplyScalar(0.5);
+  const cRight = cFR.clone().add(cRR).multiplyScalar(0.5);
+
+  // 步骤1：从前后 & 左右轴心推出车的大致前进方向和侧向
+  const carFwd0   = cFront.clone().sub(cRear);    // 前 - 后 ≈ 前进方向
+  const carRight0 = cRight.clone().sub(cLeft);    // 右 - 左 ≈ 右方向
+  // 步骤2：叉积 fwd0 × right0 → 坡面法线（朝上）
+  //   验算（平地）：(0,0,1)×(1,0,0) = (0,1,0) ✓
+  const carUp    = new THREE.Vector3().crossVectors(carFwd0, carRight0).normalize();
+  // 步骤3：正交化，以 carFwd0 为主轴，carUp 为次轴重新推导 carRight
+  //   carRight = carUp × carFwd0：(0,1,0)×(0,0,1) = (1,0,0) ✓
+  const carRight = new THREE.Vector3().crossVectors(carUp, carFwd0).normalize();
+  // 步骤4：最终 carFwd 由 carRight × carUp 保证三轴完全正交
+  //   (1,0,0)×(0,1,0) = (0,0,1) ✓
+  const carFwd   = new THREE.Vector3().crossVectors(carRight, carUp).normalize();
+
+  const rotMat = new THREE.Matrix4().makeBasis(carRight, carUp, carFwd);
+  carRoot.quaternion.setFromRotationMatrix(rotMat);
+  carRoot.position.copy(car.pos);
+  carRoot.matrix.compose(carRoot.position, carRoot.quaternion, carRoot.scale);
+
+  // 太阳轨道动画
+  sunAngle += (2 * Math.PI / DAY_SECS) * dt;
+  const sunDir3 = new THREE.Vector3(
+    Math.cos(sunAngle) * 1000,
+    Math.sin(sunAngle) * 1000,
+    300
+  ).normalize();
+
+  // 视觉太阳球留在 1000 km 处
+  sunMesh.position.copy(sunDir3).multiplyScalar(1000);
+
+  // DirectionalLight 贴近车辆 0.3 km，shadow camera 精度才够
+  // 方向不变（(light.pos - light.target) / dist = sunDir3），阴影采样窗口只覆盖车周围
+  sun.position.copy(car.pos).addScaledVector(sunDir3, 0.3);
+  sun.target.position.copy(car.pos);
+  sun.target.updateMatrixWorld();
+
+  terrainUniforms.sunDir.value.copy(sunDir3);
+  // 环境光极低，保持 Moebius 高对比度
+  ambient.intensity = 0.04 + Math.max(0, sunDir3.y) * 0.05;
+
+  // 车头灯：太阳低于地平线时渐亮
+  const _hlUp   = car.pos.clone().normalize();
+  const sunHt   = sunDir3.dot(_hlUp);                     // >0 白天, <0 夜晚
+  const hlT     = Math.max(0, Math.min(1, (0.10 - sunHt) / 0.18));
+  const hlInten = hlT * 2.5;     // 强度减半（6→2.5）
+  headlights.forEach(hl => { hl.intensity = hlInten; });
+  // 灯泡可见 mesh：白天暗灰，夜晚发亮（与 SpotLight 同色）
+  headlightBulbs.forEach(b => {
+    const k = 0.15 + hlT * 0.85;
+    b.material.color.setRGB(0xff/255 * k, 0xe2/255 * k, 0xc4/255 * k);
+  });
+
+  // ── 相机（WoW 轨道）──────────────────────────────────────────────────
+	  // 玩家开始操作就退出开场
+	  if (cam.intro && (Math.abs(car.speed) > 5 / 3600 || (mouseBtn & 5))) {
+	    cam.intro = false;
+	  }
+	  // 行驶中 rubber-band 回正
+	  const isMoving = Math.abs(car.speed) > 5 / 3600;
+	  if (isMoving && !(mouseBtn & 5) && !cam.intro) cam.yawOff *= Math.exp(-RUBBER_BAND * dt);
+
+  // 相机水平朝向 = 车朝向 + π（正后方）+ 偏移
+  const worldCamYaw = car.yaw + Math.PI + cam.yawOff;
+  const hFlat = new THREE.Vector3(Math.sin(worldCamYaw), 0, Math.cos(worldCamYaw));
+  const hDir  = hFlat.sub(up.clone().multiplyScalar(hFlat.dot(up))).normalize();
+
+  const hDist = cam.dist * Math.cos(cam.pitch);
+  const vDist = cam.dist * Math.sin(cam.pitch);
+
+  // 看向目标（车身上方 2 m）
+  const lookTarget = car.pos.clone().addScaledVector(up, 0.002);
+  let   idealPos   = lookTarget.clone()
+    .addScaledVector(hDir, hDist)
+    .addScaledVector(up,   vDist);
+
+  // ── 相机地面碰撞（复用 _camRay，每帧一次）───────────────────────────
+  const camUp = idealPos.clone().normalize();
+  _camRay.set(idealPos.clone().addScaledVector(camUp, 25), camUp.clone().negate());
+  _camRay.far = 50;
+  const camHits = _camRay.intersectObjects(allTileMeshes, false);
+  if (camHits.length > 0) {
+    const surfaceR = camHits[0].point.length() + 0.001;
+    if (idealPos.length() < surfaceR) idealPos.setLength(surfaceR);
+  } else {
+    if (idealPos.length() < groundY + 0.001) idealPos.setLength(groundY + 0.001);
+  }
+
+  // 直接赋位置，不 lerp——消除加速时相机滞后拉远的感觉
+  camera.position.copy(idealPos);
+  camera.lookAt(lookTarget);
+
+  // HUD（km/h 显示）
+  document.getElementById('spd').textContent = (Math.abs(car.speed) * 3600).toFixed(0);
+  document.getElementById('pos').textContent  =
+    `${car.pos.x.toFixed(3)}, ${car.pos.z.toFixed(3)}`;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  小地图
+// ══════════════════════════════════════════════════════════════════════
+const miniC   = document.getElementById('minimap-canvas');
+const miniCtx = miniC.getContext('2d');
+const MAP_PX_RADIUS = 90;           // 圆形地图半径（像素，240px 画布留 30px 给罗盘）
+const MAP_RANGE     = Math.PI * 0.7 / 3;  // 视野角半径（弧度）
+
+// ── 小地图配色（与地形12色阶对应）──────────────────────────────────────
+// 底色 = cold0 级别（深蓝黑）
+const MM_BASE = '#12192A';
+// 夜面叠加层：cold1~2 级别深蓝灰
+const MM_SHD_R=18, MM_SHD_G=30, MM_SHD_B=58, MM_SHD_A=160;
+// 日照叠加层：warm2~3 级别中灰
+const MM_LIT_R=90, MM_LIT_G=100, MM_LIT_B=112, MM_LIT_A=135;
+// 晨昏渐变：cold4~warm0 过渡
+const MM_DSK1_R=60, MM_DSK1_G=78, MM_DSK1_B=98, MM_DSK1_A=105;  // 靠日侧
+const MM_DSK0_R=30, MM_DSK0_G=48, MM_DSK0_B=80, MM_DSK0_A=145;  // 靠夜侧
+const MM_BAND = 0.18;
+
+// 每帧缓存的车辆基向量
+const _mmUp    = new THREE.Vector3();
+const _mmFwd   = new THREE.Vector3();
+const _mmRight = new THREE.Vector3();
+const _mmTmp   = new THREE.Vector3();
+
+function refreshMinimapBasis() {
+  _mmUp.copy(car.pos).normalize();
+  // 车头方向投影到球面切平面
+  _mmTmp.set(Math.sin(car.yaw), 0, Math.cos(car.yaw));
+  const dot = _mmTmp.dot(_mmUp);
+  _mmFwd.copy(_mmTmp).sub(_mmUp.clone().multiplyScalar(dot)).normalize();
+  _mmRight.crossVectors(_mmFwd, _mmUp).normalize();
+}
+
+// 球面方向 → 小地图画布坐标（方位等距投影）
+function projectAzimuthal(targetWorld) {
+  _mmTmp.copy(targetWorld).normalize();
+  const dot = Math.max(-1, Math.min(1, _mmUp.dot(_mmTmp)));
+  const d = Math.acos(dot);
+  const tx = _mmTmp.x - _mmUp.x * dot;
+  const ty = _mmTmp.y - _mmUp.y * dot;
+  const tz = _mmTmp.z - _mmUp.z * dot;
+  const tLen2 = tx*tx + ty*ty + tz*tz;
+  if (tLen2 < 1e-12) return { x:0, y:0, outOfRange:false };
+  const invLen = 1 / Math.sqrt(tLen2);
+  const tanRight = (tx*_mmRight.x + ty*_mmRight.y + tz*_mmRight.z) * invLen;
+  const tanFwd   = (tx*_mmFwd.x   + ty*_mmFwd.y   + tz*_mmFwd.z)   * invLen;
+  const scale = MAP_PX_RADIUS / MAP_RANGE;
+  return { x: tanRight*d*scale, y: tanFwd*d*scale, outOfRange: d > MAP_RANGE };
+}
+
+function worldDirToScreenAngle(dirWorld) {
+  const dotU = dirWorld.dot(_mmUp);
+  const tx = dirWorld.x - _mmUp.x*dotU;
+  const ty = dirWorld.y - _mmUp.y*dotU;
+  const tz = dirWorld.z - _mmUp.z*dotU;
+  if (tx*tx + ty*ty + tz*tz < 1e-9) return 0;
+  return Math.atan2(tx*_mmRight.x + ty*_mmRight.y + tz*_mmRight.z,
+                    tx*_mmFwd.x   + ty*_mmFwd.y   + tz*_mmFwd.z);
+}
+
+// 半分辨率光照层（130×130 → 放大到 200×200）
+const LIGHT_W = 130, LIGHT_H = 130;
+const _litCanvas = document.createElement('canvas');
+_litCanvas.width  = LIGHT_W; _litCanvas.height = LIGHT_H;
+const _litCtx = _litCanvas.getContext('2d');
+const _litImg = _litCtx.createImageData(LIGHT_W, LIGHT_H);
+const LIGHT_CX = LIGHT_W/2, LIGHT_CY = LIGHT_H/2;
+const LIGHT_R  = LIGHT_W / 2;          // 填满半分辨率画布，放大后覆盖整个地图圆
+const LIGHT_SCALE = LIGHT_R / MAP_RANGE;
+const _mmSunDir = new THREE.Vector3();
+
+function updateLightingLayer() {
+  _mmSunDir.set(Math.cos(sunAngle)*1000, Math.sin(sunAngle)*1000, 300).normalize();
+  const Sx = _mmSunDir.dot(_mmRight);
+  const Sy = _mmSunDir.dot(_mmFwd);
+  const Sz = _mmSunDir.dot(_mmUp);
+  const data = _litImg.data;
+  const R2 = LIGHT_R * LIGHT_R;
+  for (let py = 0; py < LIGHT_H; py++) {
+    const dy = py - LIGHT_CY;
+    for (let px = 0; px < LIGHT_W; px++) {
+      const dx = px - LIGHT_CX;
+      const r2 = dx*dx + dy*dy;
+      const idx = (py*LIGHT_W + px)*4;
+      if (r2 > R2) { data[idx+3]=0; continue; }
+      const r = Math.sqrt(r2);
+      const alpha = r / LIGHT_SCALE;
+      const sa = Math.sin(alpha), ca = Math.cos(alpha);
+      const invR = r > 0.001 ? sa/r : 0;
+      const lit = dx*invR*Sx - dy*invR*Sy + ca*Sz;
+      if (lit > MM_BAND) {
+        data[idx]=MM_LIT_R; data[idx+1]=MM_LIT_G; data[idx+2]=MM_LIT_B; data[idx+3]=MM_LIT_A;
+      } else if (lit > -MM_BAND) {
+        const t = (lit+MM_BAND)/(2*MM_BAND);
+        data[idx]   = (MM_DSK0_R + t*(MM_DSK1_R-MM_DSK0_R))|0;
+        data[idx+1] = (MM_DSK0_G + t*(MM_DSK1_G-MM_DSK0_G))|0;
+        data[idx+2] = (MM_DSK0_B + t*(MM_DSK1_B-MM_DSK0_B))|0;
+        data[idx+3] = (MM_DSK0_A + t*(MM_DSK1_A-MM_DSK0_A))|0;
+      } else {
+        data[idx]=MM_SHD_R; data[idx+1]=MM_SHD_G; data[idx+2]=MM_SHD_B; data[idx+3]=MM_SHD_A;
+      }
+    }
+  }
+  _litCtx.putImageData(_litImg, 0, 0);
+}
+
+function drawMinimap() {
+  const W = miniC.width, H = miniC.height;
+  const cx = W/2, cy = H/2, R = MAP_PX_RADIUS;
+  const g = miniCtx;
+  g.clearRect(0, 0, W, H);
+
+  refreshMinimapBasis();
+
+  // 外圈刻度（冷灰色调，匹配 cold4~5）
+  for (let i = 0; i < 16; i++) {
+    const a = i*Math.PI/8, isMajor = (i%4)===0;
+    const r1 = R+4, r2 = R+(isMajor?11:7);
+    g.strokeStyle = isMajor ? 'rgba(140,160,190,0.9)' : 'rgba(100,120,155,0.5)';
+    g.lineWidth = isMajor ? 1.5 : 1;
+    g.beginPath();
+    g.moveTo(cx+Math.sin(a)*r1, cy-Math.cos(a)*r1);
+    g.lineTo(cx+Math.sin(a)*r2, cy-Math.cos(a)*r2);
+    g.stroke();
+  }
+
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, Math.PI*2); g.clip();
+
+  // 底色（cold0 级别）
+  g.fillStyle = MM_BASE; g.fillRect(0, 0, W, H);
+
+  // 网格线（cold3~4 色调，低饱和蓝灰）
+  g.strokeStyle = 'rgba(55,75,110,0.28)'; g.lineWidth = 1;
+  for (let i=1; i<=3; i++) { g.beginPath(); g.arc(cx,cy,R*i/3,0,Math.PI*2); g.stroke(); }
+  g.strokeStyle = 'rgba(55,75,110,0.18)';
+  for (let i=0; i<8; i++) {
+    const a=i*Math.PI/4;
+    g.beginPath(); g.moveTo(cx,cy); g.lineTo(cx+Math.sin(a)*R,cy-Math.cos(a)*R); g.stroke();
+  }
+
+  // 光照层
+  updateLightingLayer();
+  g.imageSmoothingEnabled = true;
+  g.drawImage(_litCanvas, 0, 0, W, H);
+
+  // 夜间车头灯晕
+  const playerLit = _mmSunDir.dot(_mmUp);
+  if (playerLit < 0.05) {
+    const haloR = 32;
+    const halo = g.createRadialGradient(cx,cy,0,cx,cy,haloR);
+    const a = Math.min(0.28,(0.05-playerLit)*1.6);
+    halo.addColorStop(0, `rgba(255,220,150,${a})`);
+    halo.addColorStop(0.6, `rgba(255,200,120,${a*0.3})`);
+    halo.addColorStop(1, 'rgba(255,200,120,0)');
+    g.fillStyle = halo;
+    g.beginPath(); g.arc(cx,cy,haloR,0,Math.PI*2); g.fill();
+  }
+
+  // 边缘暗角
+  const vg = g.createRadialGradient(cx,cy,R*0.6,cx,cy,R);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,5,15,0.45)');
+  g.fillStyle = vg; g.beginPath(); g.arc(cx,cy,R,0,Math.PI*2); g.fill();
+
+  // 太阳方向指示点
+  _mmSunDir.set(Math.cos(sunAngle)*1000, Math.sin(sunAngle)*1000, 300).normalize();
+  const sunAng = worldDirToScreenAngle(_mmSunDir);
+  const sx = cx+Math.sin(sunAng)*(R-14), sy = cy-Math.cos(sunAng)*(R-14);
+  g.save(); g.translate(sx,sy);
+  g.fillStyle='#ffe070'; g.shadowColor='#ffd860'; g.shadowBlur=10;
+  g.beginPath(); g.arc(0,0,3,0,Math.PI*2); g.fill();
+  g.shadowBlur=0; g.restore();
+
+  // 车辆指示（脉冲环 + 三角箭头，用 warm4 色调）
+  const pulse = (performance.now()%1400)/1400;
+  g.strokeStyle = `rgba(180,195,210,${(1-pulse)*0.5})`; g.lineWidth=1.2;
+  g.beginPath(); g.arc(cx,cy,5+pulse*16,0,Math.PI*2); g.stroke();
+  g.save(); g.translate(cx,cy);
+  g.fillStyle='rgba(200,215,230,0.95)'; g.shadowColor='rgba(160,185,210,1)'; g.shadowBlur=10;
+  g.beginPath(); g.moveTo(0,-10); g.lineTo(-7,6); g.lineTo(0,3); g.lineTo(7,6); g.closePath(); g.fill();
+  g.shadowBlur=0; g.restore();
+
+  g.restore();
+
+  // 边框（cold5 色调细线）
+  g.strokeStyle='rgba(120,145,180,0.6)'; g.lineWidth=1.5;
+  g.beginPath(); g.arc(cx,cy,R,0,Math.PI*2); g.stroke();
+  g.strokeStyle='rgba(80,105,145,0.35)'; g.lineWidth=1;
+  g.beginPath(); g.arc(cx,cy,R+4,0,Math.PI*2); g.stroke();
+
+  // 罗盘标签（在圆圈外，240px 画布 120px 圆心，R+17=107，不会截断）
+  const northAng = worldDirToScreenAngle(new THREE.Vector3(0,1,0));
+  const labels = [['N',northAng,'rgba(200,215,230,0.9)'],
+                  ['E',northAng+Math.PI/2,'rgba(140,158,180,0.7)'],
+                  ['S',northAng+Math.PI,'rgba(140,158,180,0.7)'],
+                  ['W',northAng-Math.PI/2,'rgba(140,158,180,0.7)']];
+  g.font='bold 11px monospace'; g.textAlign='center'; g.textBaseline='middle';
+  labels.forEach(([txt,a,col]) => {
+    g.fillStyle=col;
+    g.fillText(txt, cx+Math.sin(a)*(R+17), cy-Math.cos(a)*(R+17));
+  });
+}
+
+// ── 渲染循环 ──────────────────────────────────────────────────────────
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  update(dt);
+  renderer.render(scene, camera);
+  drawMinimap();
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

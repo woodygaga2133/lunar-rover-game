@@ -1,0 +1,61 @@
+# Blender
+*.blend
+*.blend1
+
+# Dev files
+*.backup.*
+*backup*
+build_rover.py
+_make_rover_js.py
+blender_*.py
+export_*.py
+
+# Reference images
+style image/
+*.jpg
+*.png
+*.jpeg
+
+# Old game versions
+index3d-*.html
+moon_scene_v2.html
+moon-chunk-experiment.html
+pixel-character.html
+capsule-model.js
+earth-model.js
+moon-model.js
+rover-model*.js
+
+# Unused tile sets (keep only moon small_tiles/)
+moon_tiles/
+moon small_tiles smooth/
+
+# Large unused models
+models/moon.glb
+models/rover.glb
+models/rover_lite_draco.glb
+
+# Misc
+design-journal.md
+life-support-system.md
+*.py
+*.docx
+.claude/
+server.js
+color_preview.html
+lunar-sandbox.html
+"game system/"
+*.html.backup*
+rover-preview.html
+moon_scene_v2.html
+moon-chunk-experiment*
+moon_scene_backup*
+index3d-*.html
+pixel-character.html
+
+# Rocks (reverted feature)
+rocks/
+
+# Old tile sets
+moon_tiles/
+"moon small_tiles smooth/"
