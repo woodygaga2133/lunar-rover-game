@@ -171,7 +171,7 @@ const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.0001,
 // 核心原则：平地完全同色（消除3D感）+ 世界坐标散布石子痕迹（近景细节）
 // Object.assign 而非 UniformsUtils.merge，后者会 clone Vector3 导致引用断裂
 // ── 地面贴图：seamless rocks_ground_03 ──────────────────────────────
-const _groundTex = new THREE.TextureLoader().load('textures/rocks_ground_09.jpg');
+const _groundTex = new THREE.TextureLoader().load('./textures/rocks_ground_09.jpg');
 _groundTex.wrapS = THREE.RepeatWrapping;
 _groundTex.wrapT = THREE.RepeatWrapping;
 _groundTex.colorSpace = THREE.SRGBColorSpace;
@@ -613,7 +613,7 @@ HL_CONFIG.forEach(([pos, tgt]) => {
 });
 
 // 异步加载真实 GLB 月球车（独立 loader，不复用后面才定义的地形 loader）
-new GLTFLoader().load('models/rover_lite.glb', (gltf) => {
+new GLTFLoader().load('./models/rover_lite.glb', (gltf) => {
   const m = gltf.scene;
   // 模型默认朝向修正（实测：rotation=0 时车头对齐物理 +Z forward）
   m.rotation.y = 0;
@@ -1133,7 +1133,7 @@ scene.add(_bigRockGroup);
 let _bigRockLoadCount = 0;
 for (let i = 0; i < 6; i++) {
   const idx = i;
-  new GLTFLoader().load(`rocks/big/big_${String(i).padStart(2,'0')}.glb`, gltf => {
+  new GLTFLoader().load(`./rocks/big/big_${String(i).padStart(2,'0')}.glb`, gltf => {
     let g = null;
     gltf.scene.traverse(o => { if (o.isMesh && !g) g = o.geometry.clone(); });
     if (!g) return;
@@ -1349,7 +1349,7 @@ document.addEventListener('keydown', e => { keys[e.code] = true;  });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
 
 // ── 动态地形加载 ──────────────────────────────────────────────────────
-const TILE_BASE   = 'moon%20small_tiles/';     // 单一 smooth 版本
+const TILE_BASE   = './moon%20small_tiles/';     // 单一 smooth 版本
 const TILE_SCALE  = 1;                          // 不放大，保持 Blender 原始 ~30km 半径
 const TILE_POS_SCALE = 30.0 / 175.0;            // metadata 中心点是 175 标度，除以这个换成 30 标度
 const LOAD_DIST   = 4;     // 30km 月球地平线 ~170m，4km 足够覆盖可见地形 + 远景余量
@@ -1465,7 +1465,7 @@ function checkTiles() {
   }
 }
 
-fetch('moon%20small_tiles/metadata.json')
+fetch('./moon%20small_tiles/metadata.json')
   .then(r => r.json())
   .then(meta => {
     tileData = meta.tiles;
