@@ -1,0 +1,21 @@
+{
+  "small": [
+    "small_00.glb",
+    "small_01.glb",
+    "small_02.glb",
+    "small_03.glb",
+    "small_04.glb",
+    "small_05.glb",
+    "small_06.glb",
+    "small_07.glb",
+    "small_08.glb"
+  ],
+  "big": [
+    "big_00.glb",
+    "big_01.glb",
+    "big_02.glb",
+    "big_03.glb",
+    "big_04.glb",
+    "big_05.glb"
+  ]
+}

@@ -59,3 +59,12 @@ rocks/
 # Old tile sets
 moon_tiles/
 "moon small_tiles smooth/"
+
+# Allow 1.0.1 required assets (override earlier rules)
+!textures/rocks_ground_09.jpg
+!rocks/
+!rocks/big/
+!rocks/small/
+!rocks/manifest.json
+!rocks/big/*.glb
+!rocks/small/small_00.glb
