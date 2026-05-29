@@ -485,7 +485,7 @@ HL_CONFIG.forEach(([pos, tgt]) => {
 });
 
 // 异步加载真实 GLB 月球车（独立 loader，不复用后面才定义的地形 loader）
-new GLTFLoader().load('../models/rover_lite.glb', (gltf) => {
+new GLTFLoader().load('models/rover_lite.glb', (gltf) => {
   const m = gltf.scene;
   // 模型默认朝向修正（实测：rotation=0 时车头对齐物理 +Z forward）
   m.rotation.y = 0;
@@ -599,7 +599,7 @@ document.addEventListener('keydown', e => { keys[e.code] = true;  });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
 
 // ── 动态地形加载 ──────────────────────────────────────────────────────
-const TILE_BASE   = '../moon%20small_tiles/';
+const TILE_BASE   = 'moon%20small_tiles/';
 const TILE_SCALE  = 175 / 29.41;           // Blender 均值半径 29.41km → 游戏 175km
 const LOAD_DIST   = 55;    // km — 加载范围
 const UNLOAD_DIST = 75;    // km — 卸载范围
@@ -695,7 +695,7 @@ function checkTiles() {
   }
 }
 
-fetch('../moon%20small_tiles/metadata.json')
+fetch('moon%20small_tiles/metadata.json')
   .then(r => r.json())
   .then(meta => {
     tileData = meta.tiles;

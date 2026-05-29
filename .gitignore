@@ -68,3 +68,9 @@ moon_tiles/
 !rocks/manifest.json
 !rocks/big/*.glb
 !rocks/small/small_00.glb
+
+# Root-level assets are unused (each version folder has its own copies)
+/moon small_tiles/
+/models/
+/rocks/
+/textures/
