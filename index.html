@@ -2,62 +2,249 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<title>月球漫游 · 版本选择</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LUNAR · Moon Rover</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; overflow:hidden; }
 body {
   background:#000;
-  color:#ccc;
-  font-family:'Limelight','Segoe UI','PingFang SC',sans-serif;
+  color:#e8eaf0;
+  font-family:'Segoe UI','PingFang SC','SF Pro Display',sans-serif;
+  letter-spacing:0.04em;
+  position:relative;
+}
+
+/* ── 星空背景（纯 CSS：双层 box-shadow 散点 + 微闪烁） ── */
+.stars, .stars2 {
+  position:fixed; inset:0; pointer-events:none;
+  background:transparent;
+}
+.stars::after, .stars2::after {
+  content:''; position:absolute; inset:0;
+  background-image: radial-gradient(1px 1px at 23% 17%, #fff, transparent),
+                    radial-gradient(1px 1px at 78% 35%, #fff, transparent),
+                    radial-gradient(1px 1px at 12% 64%, #fff, transparent),
+                    radial-gradient(1px 1px at 89% 78%, #fff, transparent),
+                    radial-gradient(1px 1px at 47% 92%, #fff, transparent),
+                    radial-gradient(2px 2px at 32% 28%, #fff, transparent),
+                    radial-gradient(2px 2px at 67% 53%, #aef, transparent),
+                    radial-gradient(2px 2px at 84% 81%, #fff, transparent),
+                    radial-gradient(1px 1px at 5% 45%, #fff, transparent),
+                    radial-gradient(1px 1px at 95% 12%, #fff, transparent),
+                    radial-gradient(1px 1px at 41% 71%, #ddf, transparent),
+                    radial-gradient(1px 1px at 58% 8%, #fff, transparent),
+                    radial-gradient(1px 1px at 19% 88%, #fff, transparent),
+                    radial-gradient(1px 1px at 71% 22%, #fff, transparent),
+                    radial-gradient(1px 1px at 36% 51%, #fff, transparent);
+  background-size: 100% 100%;
+  opacity:0.85;
+}
+.stars2::after {
+  background-image: radial-gradient(1px 1px at 8% 30%, #fff, transparent),
+                    radial-gradient(1px 1px at 51% 16%, #fff, transparent),
+                    radial-gradient(1px 1px at 73% 67%, #fff, transparent),
+                    radial-gradient(1px 1px at 27% 81%, #fff, transparent),
+                    radial-gradient(2px 2px at 92% 49%, #fff, transparent),
+                    radial-gradient(1px 1px at 64% 38%, #fff, transparent),
+                    radial-gradient(1px 1px at 40% 4%, #fff, transparent);
+  animation: twinkle 4s ease-in-out infinite alternate;
+  opacity:0.5;
+}
+@keyframes twinkle { 0% { opacity:0.3 } 100% { opacity:0.7 } }
+
+/* ── 月球辉光（左下角的弧形渐变） ── */
+.moon-glow {
+  position:fixed; bottom:-300px; left:-200px;
+  width:700px; height:700px; border-radius:50%;
+  background:radial-gradient(circle at 60% 40%,
+    rgba(120,140,180,0.18) 0%,
+    rgba(70,90,130,0.08) 35%,
+    transparent 60%);
+  pointer-events:none;
+}
+
+/* ── Layout ── */
+.wrap {
+  position:relative; z-index:10;
   min-height:100vh;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:48px;
-  letter-spacing:0.05em;
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  padding:40px 20px;
 }
+
+/* ── 标题 ── */
+.title-block { text-align:center; margin-bottom:60px; }
 h1 {
-  font-size:clamp(48px, 8vw, 96px);
+  font-size:clamp(64px, 12vw, 160px);
   font-weight:100;
-  letter-spacing:0.25em;
+  letter-spacing:0.35em;
   color:#fff;
-  text-shadow:0 0 60px rgba(255,255,255,0.15);
+  text-shadow:
+    0 0 40px rgba(180,200,255,0.25),
+    0 0 80px rgba(120,150,210,0.15);
+  margin-right:-0.35em;   /* 抵消 letter-spacing 右侧空隙，视觉居中 */
+  animation:glow 6s ease-in-out infinite alternate;
 }
-.versions { display:flex; gap:32px; flex-wrap:wrap; justify-content:center; }
+@keyframes glow {
+  0%   { text-shadow:0 0 40px rgba(180,200,255,0.20), 0 0 80px rgba(120,150,210,0.12); }
+  100% { text-shadow:0 0 60px rgba(180,200,255,0.40), 0 0 120px rgba(120,150,210,0.25); }
+}
+.subtitle {
+  margin-top:18px;
+  font-size:12px;
+  color:rgba(255,255,255,0.4);
+  letter-spacing:0.6em;
+  margin-right:-0.6em;
+  text-transform:uppercase;
+}
+
+/* ── 版本卡片 ── */
+.versions {
+  display:flex; gap:36px;
+  flex-wrap:wrap; justify-content:center;
+}
 a.version {
-  display:flex; flex-direction:column; align-items:center; gap:8px;
-  width:200px; padding:32px 24px;
-  background:rgba(255,255,255,0.04);
-  border:1px solid rgba(255,255,255,0.1); border-radius:8px;
-  color:#bbb; text-decoration:none;
-  transition:all 0.3s ease;
+  display:block;
+  width:280px; padding:36px 28px 28px;
+  background:rgba(255,255,255,0.025);
+  border:1px solid rgba(255,255,255,0.1);
+  border-radius:4px;
+  color:rgba(255,255,255,0.7);
+  text-decoration:none;
+  position:relative; overflow:hidden;
+  transition:all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+a.version::before {
+  content:''; position:absolute; inset:0;
+  background:linear-gradient(135deg,
+    rgba(140,170,220,0.0) 0%,
+    rgba(140,170,220,0.08) 50%,
+    rgba(140,170,220,0.0) 100%);
+  opacity:0; transition:opacity 0.4s;
 }
 a.version:hover {
-  background:rgba(255,255,255,0.08);
-  border-color:rgba(255,255,255,0.3);
-  color:#fff; transform:translateY(-2px);
+  background:rgba(255,255,255,0.05);
+  border-color:rgba(140,180,240,0.5);
+  color:#fff;
+  transform:translateY(-4px);
+  box-shadow:0 12px 40px rgba(80,120,200,0.15);
 }
-.version-num { font-size:32px; font-weight:300; letter-spacing:0.1em; color:#fff; }
-.version-desc { font-size:12px; opacity:0.6; text-align:center; line-height:1.6; }
+a.version:hover::before { opacity:1; }
+.tag {
+  display:inline-block;
+  font-size:9px; letter-spacing:0.2em;
+  padding:3px 8px;
+  background:rgba(255,255,255,0.06);
+  border:1px solid rgba(255,255,255,0.15);
+  color:rgba(255,255,255,0.6);
+  border-radius:2px; margin-bottom:14px;
+}
+.tag.latest {
+  background:rgba(80,180,255,0.12);
+  border-color:rgba(80,180,255,0.4);
+  color:rgba(180,220,255,0.9);
+}
+.version-num {
+  font-family:'Segoe UI Light','SF Pro Display Light',sans-serif;
+  font-size:42px; font-weight:200;
+  color:#fff; line-height:1;
+  margin-bottom:8px;
+  letter-spacing:0.05em;
+}
+.version-name {
+  font-size:13px;
+  color:rgba(255,255,255,0.85);
+  margin-bottom:18px;
+  letter-spacing:0.05em;
+}
+.version-features {
+  list-style:none;
+  font-size:11px;
+  line-height:1.9;
+  color:rgba(255,255,255,0.45);
+  letter-spacing:0.04em;
+}
+.version-features li::before {
+  content:'·'; margin-right:8px; color:rgba(140,180,240,0.7);
+}
+.play-btn {
+  margin-top:22px;
+  display:inline-block;
+  font-size:11px; letter-spacing:0.4em;
+  padding:9px 16px;
+  border:1px solid rgba(255,255,255,0.3);
+  color:#fff;
+  transition:all 0.3s;
+}
+a.version:hover .play-btn {
+  background:rgba(140,180,240,0.18);
+  border-color:rgba(140,180,240,0.6);
+}
+
+/* ── 底部信息 ── */
 .footer {
-  position:fixed; bottom:20px;
-  font-size:11px; color:#444; letter-spacing:0.2em;
+  position:fixed; bottom:24px; left:0; right:0;
+  text-align:center;
+  font-size:10px;
+  color:rgba(255,255,255,0.25);
+  letter-spacing:0.4em;
+  text-transform:uppercase;
+}
+.footer a { color:rgba(255,255,255,0.45); text-decoration:none; }
+.footer a:hover { color:rgba(255,255,255,0.7); }
+
+/* ── 移动端 ── */
+@media (max-width: 640px) {
+  .versions { flex-direction:column; align-items:center; }
+  a.version { width:90%; max-width:340px; }
+  .title-block { margin-bottom:40px; }
 }
 </style>
 </head>
 <body>
-  <h1>LUNAR</h1>
+
+<div class="stars"></div>
+<div class="stars2"></div>
+<div class="moon-glow"></div>
+
+<div class="wrap">
+  <div class="title-block">
+    <h1>LUNAR</h1>
+    <div class="subtitle">Moon Rover Sandbox</div>
+  </div>
+
   <div class="versions">
     <a class="version" href="v1.0.0/">
+      <span class="tag">STABLE</span>
       <div class="version-num">v1.0.0</div>
-      <div class="version-desc">初版部署<br>175km 月球</div>
+      <div class="version-name">初版部署</div>
+      <ul class="version-features">
+        <li>175 km 月球</li>
+        <li>Moebius 手绘风</li>
+        <li>动态地形流式加载</li>
+      </ul>
+      <div class="play-btn">PLAY ›</div>
     </a>
     <a class="version" href="v1.0.1/">
+      <span class="tag latest">LATEST</span>
       <div class="version-num">v1.0.1</div>
-      <div class="version-desc">物理 + 贴图<br>30km 月球</div>
+      <div class="version-name">物理 + 贴图</div>
+      <ul class="version-features">
+        <li>30 km 月球</li>
+        <li>球面贴图 / Toon shader</li>
+        <li>重力 / 抛物线 / 跳跃</li>
+        <li>大石头散布 / 车辙印</li>
+      </ul>
+      <div class="play-btn">PLAY ›</div>
     </a>
   </div>
-  <div class="footer">CHOOSE VERSION</div>
+</div>
+
+<div class="footer">
+  <a href="https://github.com/woodygaga2133/lunar-rover-game" target="_blank">GITHUB</a>
+  &nbsp;·&nbsp; THREE.JS &nbsp;·&nbsp; 2026
+</div>
+
 </body>
 </html>
