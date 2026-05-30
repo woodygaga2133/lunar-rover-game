@@ -1270,6 +1270,7 @@ const car = {
   groundedInit: false, // 首次落地标记（防 startup 车飘空中）
 };
 const GRAVITY_KM = 0.012;   // 12 m/s²（比地球稍重，"沉"的感觉）
+
 // 四轮独立检测点（FL=左前 FR=右前 RL=左后 RR=右后），分别 lerp
 let wFL = 30.0, tFL = 30.0;
 let wFR = 30.0, tFR = 30.0;
@@ -1352,8 +1353,8 @@ document.addEventListener('keyup',   e => { keys[e.code] = false; });
 const TILE_BASE   = './moon%20small_tiles/';     // 单一 smooth 版本
 const TILE_SCALE  = 1;                          // 不放大，保持 Blender 原始 ~30km 半径
 const TILE_POS_SCALE = 30.0 / 175.0;            // metadata 中心点是 175 标度，除以这个换成 30 标度
-const LOAD_DIST   = 4;     // 30km 月球地平线 ~170m，4km 足够覆盖可见地形 + 远景余量
-const UNLOAD_DIST = 6;
+const LOAD_DIST   = 7;     // 4 → 7km：约 ×3 加载面积，~25-30 tiles，预计内存 130MB
+const UNLOAD_DIST = 9;
 const CHECK_MS    = 3000;
 
 const loader        = new GLTFLoader();
@@ -1573,20 +1574,67 @@ function update(dt) {
     car.vRad = 0;
     car.airborne = false;
     car.groundedInit = true;
-  } else {
-    // ── 重力 + 抛物线 ───────────────────────────────────────────────
-    car.vRad -= GRAVITY_KM * dt;
-    let newR = car.pos.length() + car.vRad * dt;
-    if (newR <= groundY) {
-      // 平滑跟随地面：lerp 到 groundY，而不是瞬间 snap（小起伏不再"跳一跳"）
-      const k = 1 - Math.exp(-dt * 15);   // 时间常数约 67ms
-      newR = newR + (groundY - newR) * k;
-      car.vRad = 0;
-      car.airborne = false;
-    } else {
-      car.airborne = true;
+    car._lastGroundY = groundY;       // 初始化历史值
+  } else if (car.groundedInit) {
+    // ── 物理 v3：弹簧-阻尼连续模型 ─────────────────────────────────
+    // 无状态机、无 if-else 切换。每帧应用同样的三种力：
+    //   1) 重力（始终向下）
+    //   2) 弹簧（车在地面以上时把它拉回地面，力 = K × 离地高度，带 tanh 饱和防爆炸）
+    //   3) 阻尼（吸收"相对地面"的速度，模拟悬挂吸能；不影响沿坡滑行）
+    // 撞地 = 位置卡到 groundY，vRad 不能比坡速更负（地面顶上去）
+    //
+    // 调三个常数即可：
+    //   K_SPRING  ↑ → 车更"粘"地面（赛车感）
+    //   K_DAMP    ↑ → 落地更"沉"（吸能更狠，不弹）
+    //   F_MAX_G   ↑ → 弹簧最大力（防止悬崖时车被瞬移拉下来）
+
+    const K_SPRING = 800;      // 弹簧系数 1/s²（F_MAX_G=0 时不生效）
+    const K_DAMP   = 0;        // 阻尼。0 = 纯物理（下坡能飞）；>0 会主动拉向坡速 = 不自然
+    const F_MAX_G  = 0;        // 弹簧饱和上限（×g）。0 = 不吸地，纯重力支配
+    const F_MAX    = F_MAX_G * GRAVITY_KM;
+
+    const prevR  = car.pos.length();
+    const lastGY = (typeof car._lastGroundY === 'number' && isFinite(car._lastGroundY)) ? car._lastGroundY : groundY;
+    const safeDt = Math.max(dt, 1e-4);
+    const slopeV = (groundY - lastGY) / safeDt;   // 当前坡速
+
+    let vRad = car.vRad;
+
+    // 1) 重力（始终）
+    vRad -= GRAVITY_KM * dt;
+
+    // 2) 弹簧（车在地面以上时拉回；带 tanh 饱和让悬崖也能产生抛物线）
+    const heightAbove = prevR - groundY;          // 可负（位于地面以下，由前帧 snap 处理）
+    if (heightAbove > 0) {
+      const linearAccel = K_SPRING * heightAbove;
+      const accel = F_MAX * Math.tanh(linearAccel / F_MAX);  // 光滑饱和
+      vRad -= accel * dt;
     }
+
+    // 3) 阻尼：只衰减"相对坡速的部分"（防止沿坡滑行被阻尼磨慢）
+    const relV = vRad - slopeV;
+    vRad -= K_DAMP * relV * dt;
+
+    // 移动
+    let newR = prevR + vRad * dt;
+
+    // 地面约束：不能穿地。卡到 groundY，并把 vRad 钳到不低于坡速（地面顶住）
+    if (newR < groundY) {
+      newR = groundY;
+      if (vRad < slopeV) vRad = slopeV;
+    }
+
+    // NaN/无穷防御
+    if (!isFinite(newR) || !isFinite(vRad)) {
+      console.warn('[physics] NaN, reset', {prevR, groundY, lastGY, vRad: car.vRad, dt});
+      newR = groundY;
+      vRad = 0;
+    }
+
+    car.vRad = vRad;
+    car.airborne = (newR > groundY + 0.00005);  // 仅用于调试/外部状态
     car.pos.setLength(newR);
+    car._lastGroundY = groundY;
   }
 
   // ── 石头散布触发 ──
