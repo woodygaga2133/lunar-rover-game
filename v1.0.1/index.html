@@ -1568,13 +1568,20 @@ function update(dt) {
   // 四轮均值 → 目标地面高度
   groundY = (wFL + wFR + wRL + wRR) * 0.25;
 
-  // 首次贴地：tiles 加载完的第一帧强制 snap，防止车开场飘在空中
+  // 首次贴地：raycast 必须真实击中地块才 snap（30 只是平均值，实际地形可能差几百米）
   if (!car.groundedInit && allTileMeshes.length > 0) {
-    car.pos.setLength(groundY);
-    car.vRad = 0;
-    car.airborne = false;
-    car.groundedInit = true;
-    car._lastGroundY = groundY;       // 初始化历史值
+    const _u = car.pos.clone().normalize();
+    const _o = car.pos.clone().addScaledVector(_u, 25.0);
+    _hRay.set(_o, _u.clone().negate()); _hRay.far = 50;
+    const _h = _hRay.intersectObjects(allTileMeshes, false);
+    if (_h.length > 0) {
+      car.pos.setLength(_h[0].point.length() + WHEEL_R_KM);
+      car.vRad = 0;
+      car.airborne = false;
+      car.groundedInit = true;
+      car._lastGroundY = _h[0].point.length() + WHEEL_R_KM;
+    }
+    // 没击中 → 不 snap 不 init，下帧再试（避免锁在假高度）
   } else if (car.groundedInit) {
     // ── 物理 v3：弹簧-阻尼连续模型 ─────────────────────────────────
     // 无状态机、无 if-else 切换。每帧应用同样的三种力：
